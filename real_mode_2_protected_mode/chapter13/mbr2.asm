@@ -32,7 +32,7 @@
 ;       1.3 mbr根据内核头部的执行入口信息转入内核执行
 
 ;宏定义
-kernel_start_sector equ 5               ;内核在硬盘中的起始逻辑扇区号
+kernel_start_sector equ 10              ;内核在硬盘中的起始逻辑扇区号
 kernel_base_address equ 0x00040000      ;内核要加载到的内存起始地址
 
 ;    _______ __ 0xffffffff (4GB)
@@ -248,14 +248,15 @@ flush:
     mov [esi+0x38],eax
     mov [esi+0x3c],edx
 
-    sub esi,0x2
-    mov ax,[esi]                ;更新GDT界限
-    add ax,192                  ;3*64
-    mov [esi],ax
-
+    mov esi,0x7c00+pgdt     ;gdt基地址 
+    add word [esi],24       ;更新GDT界限(3*8)
     lgdt [esi]
 
-    jmp far [edi+0x10]          ;执行内核入口点
+    movzx eax,word [edi+0x14]
+    push eax
+    push dword [edi+0x10]
+    retf
+    ;jmp far [edi+0x10]          ;执行内核入口点
 
 ;从硬盘读取一个扇区（512字节）
 ;参数：
@@ -328,7 +329,7 @@ read_one_disk_sector:
 .wait:              ;4. 等待硬盘准备好可读
     in  al,dx
     and al,0x88
-    or  al,0x08
+    cmp al,0x08
     jnz .wait
     
     mov ecx,256     ;5. 读取硬盘
@@ -353,6 +354,8 @@ read_one_disk_sector:
 ;输出：
 ;   edx:eax 完整的段描述符
 make_seg_descriptor:
+    push ebx
+
     mov edx,eax
     rol eax,16      ;Set Base 15:0
     mov ax,bx       ;Set Limit 15:0
@@ -365,6 +368,8 @@ make_seg_descriptor:
     or  edx,ebx     ;Set Limit 19:16
 
     or  edx,ecx     ;Set Prop.
+
+    pop ebx
 
     ret
 
