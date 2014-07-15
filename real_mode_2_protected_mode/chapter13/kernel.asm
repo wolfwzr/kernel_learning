@@ -410,7 +410,7 @@ put_hex_dword:
 
     retf
 
-sys_routine_end
+sys_routine_end:
 
 ;内核数据段
 SECTION kernel_data vstart=0
@@ -423,9 +423,38 @@ memory  dd  0x00100000
 ;put_hex_dword函数用的十六进制表
 hex_table   db  '0123456789abcdef'
 
-msg_1   db  'in kernel, prepare to load user program', 0
+return_str  db 0x0a, 0x0d, 0
 
-kernel_data_end
+msg_1       db 'Now is in kernel, prepare to load user program', 0
+cpu_brnd0   db 'CPU INFO:', 0
+cpu_brand   times   64  db 0
+
+salt:
+
+salt_1      db '@PrintString'
+            times (256-($-salt_1))  db 0
+            dd putstr
+            dw kernel_sysroute_seg_sel
+
+salt_2      db '@ReadDiskData'
+            times (256-($-salt_2))  db 0
+            dd read_one_disk_sector
+            dw kernel_sysroute_seg_sel
+
+salt_3      db '@PrintDwordAsHexString'
+            times (256-($-salt_3))  db 0
+            dd put_hex_dword
+            dw kernel_sysroute_seg_sel
+
+salt_4      db '@TerminateProgram'
+            times (256-($-salt_4))  db 0
+            dd return_point
+            dw kernel_code_seg_sel
+
+salt_item_len   equ $-salt_4
+salt_items      equ ($-salt)/salt_item_len
+
+kernel_data_end:
 
 ;内核代码段
 SECTION kernel_code vstart=0
@@ -437,13 +466,52 @@ start:
     mov eax,kernel_data_seg_sel
     mov ds,eax
 
-    mov ebx,msg_1
-    call putstr
-    jmp $
+    mov ebx,return_str
+    call kernel_sysroute_seg_sel:putstr
 
-kernel_code_end
+    mov ebx,cpu_brnd0
+    call kernel_sysroute_seg_sel:putstr
+
+    mov ebx,return_str
+    call kernel_sysroute_seg_sel:putstr
+
+    ;使用cpuid获取cpu信息
+    mov eax,0x80000002
+    cpuid
+    mov [cpu_brand+0x00], eax
+    mov [cpu_brand+0x04], ebx
+    mov [cpu_brand+0x08], ecx
+    mov [cpu_brand+0x0c], edx
+
+    mov eax,0x80000003
+    cpuid
+    mov [cpu_brand+0x10], eax
+    mov [cpu_brand+0x14], ebx
+    mov [cpu_brand+0x18], ecx
+    mov [cpu_brand+0x1c], edx
+
+    mov eax,0x80000004
+    cpuid
+    mov [cpu_brand+0x20], eax
+    mov [cpu_brand+0x24], ebx
+    mov [cpu_brand+0x28], ecx
+    mov [cpu_brand+0x2c], edx
+
+    mov ebx,cpu_brand
+    call kernel_sysroute_seg_sel:putstr
+
+    mov ebx,return_str
+    call kernel_sysroute_seg_sel:putstr
+    call kernel_sysroute_seg_sel:putstr
+
+    mov ebx,msg_1
+    call kernel_sysroute_seg_sel:putstr
+
+return_point:
+    hlt
+kernel_code_end:
 
 SECTION kernel_tail
-kernel_end
+kernel_end:
 
 ; vim: set syntax=nasm:

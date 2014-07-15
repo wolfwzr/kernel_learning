@@ -216,7 +216,7 @@ flush:
     loop .read_disk
 
 .setup:
-    mov esi,0x7c00+pgdt+0x02    ;gdt基地址 
+    mov esi,[0x7c00+pgdt+0x02]  ;gdt基地址 
 
     mov eax,[edi+0x04]          ;内核例程段
     mov ebx,[edi+0x08]          ;段尾-段首-1=段界限
@@ -248,15 +248,10 @@ flush:
     mov [esi+0x38],eax
     mov [esi+0x3c],edx
 
-    mov esi,0x7c00+pgdt     ;gdt基地址 
-    add word [esi],24       ;更新GDT界限(3*8)
-    lgdt [esi]
+    add word [0x7c00+pgdt],24       ;更新GDT界限(3*8)
+    lgdt [0x7c00+pgdt]
 
-    movzx eax,word [edi+0x14]
-    push eax
-    push dword [edi+0x10]
-    retf
-    ;jmp far [edi+0x10]          ;执行内核入口点
+    jmp far [edi+0x10]          ;执行内核入口点
 
 ;从硬盘读取一个扇区（512字节）
 ;参数：
