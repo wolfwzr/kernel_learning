@@ -1,0 +1,10 @@
+I have a dream
+good night
+hello kitty
+
+int main()
+{
+    printf("hello, world\n");
+    return 0;
+}
+

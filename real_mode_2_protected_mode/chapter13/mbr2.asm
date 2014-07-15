@@ -200,9 +200,9 @@ flush:
     mov ecx,512
     div ecx         ;将字节数转换为所占的扇区数
     or edx,edx      ;有余数则需再读一个扇区
-    jz .contune
+    jz .continue
     inc eax
-.contune:
+.continue:
     dec eax         ;减去已读的一个扇区
 
     or eax,eax      ;eax=0?

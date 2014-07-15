@@ -426,7 +426,7 @@ hex_table   db  '0123456789abcdef'
 return_str  db 0x0a, 0x0d, 0
 
 msg_1       db 'Now is in kernel, prepare to load user program', 0
-cpu_brnd0   db 'CPU INFO:', 0
+cpu_brnd0   db 'CPU INFO: ', 0
 cpu_brand   times   64  db 0
 
 salt:
@@ -470,9 +470,6 @@ start:
     call kernel_sysroute_seg_sel:putstr
 
     mov ebx,cpu_brnd0
-    call kernel_sysroute_seg_sel:putstr
-
-    mov ebx,return_str
     call kernel_sysroute_seg_sel:putstr
 
     ;使用cpuid获取cpu信息
