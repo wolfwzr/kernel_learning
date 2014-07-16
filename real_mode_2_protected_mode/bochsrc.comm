@@ -1,7 +1,8 @@
 display_library:x
-memory: guest=32, host=32
 romimage: file=/usr/local/share/bochs/BIOS-bochs-latest
 vgaromimage: file=/usr/local/share/bochs/VGABIOS-lgpl-latest
+memory: guest=32, host=32
+mouse: enabled=1
 ata0-master: type=disk, path=../disk.vhd
 boot: disk
 log: bochs.out

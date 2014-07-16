@@ -32,7 +32,7 @@
 ;       1.3 mbr根据内核头部的执行入口信息转入内核执行
 
 ;宏定义
-kernel_start_sector equ 10              ;内核在硬盘中的起始逻辑扇区号
+kernel_start_sector equ 05              ;内核在硬盘中的起始逻辑扇区号
 kernel_base_address equ 0x00040000      ;内核要加载到的内存起始地址
 
 ;    _______ __ 0xffffffff (4GB)

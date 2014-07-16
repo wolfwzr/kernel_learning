@@ -18,6 +18,8 @@ kernel_code_seg_sel     equ 0x38    ;内核代码段选择子
 kernel_stack_seg_sel    equ 0x20    ;内核栈段选择子
 kernel_sysroute_seg_sel equ 0x28    ;内核系统例程段选择子
 
+user_prog_start_sector  equ 40      ;用户程序起始逻辑扇区号
+
 kernel_len      dd  kernel_end
 kenerl_section  dd  section.sys_routine.start 
                 dd  section.kernel_data.start
@@ -248,7 +250,7 @@ read_one_disk_sector:
 .wait:              ;4. 等待硬盘准备好可读
     in  al,dx
     and al,0x88
-    or  al,0x08
+    cmp al,0x08
     jnz .wait
     
     mov ecx,256     ;5. 读取硬盘
@@ -327,7 +329,7 @@ install_gdt_descriptor:
     push dx
     push ax
     mov ax,[pgdt]               
-    or dx,dx
+    xor dx,dx
     mov cx,8
     div cx
     mov cx,ax
@@ -428,6 +430,10 @@ return_str  db 0x0a, 0x0d, 0
 msg_1       db 'Now is in kernel, prepare to load user program', 0
 cpu_brnd0   db 'CPU INFO: ', 0
 cpu_brand   times   64  db 0
+msg_3       db 'User Program Loaded.', 0
+msg_2       db 'Back from user program', 0
+
+user_header_buffer  times 512 db 0
 
 salt:
 
@@ -459,12 +465,173 @@ kernel_data_end:
 ;内核代码段
 SECTION kernel_code vstart=0
 
+;load_relocate_user_program函数
+;
+;作用：
+;   从硬盘加载用户程序到内存，为其添加段选择子并重定位salt
+;参数：
+;   esi = 用户程序起始逻辑扇区号
+;输出：
+;   ax = 用户header段的选择子
 load_relocate_user_program:
+    push ebx
+    push ecx
+    push edx
+    push edi
+    push esi
+    push ds
+    push es
+
+    mov eax,kernel_data_seg_sel
+    mov ds, eax
+
+    ;加载用户程序的第一扇区
+    mov eax,esi
+    mov ebx,user_header_buffer
+    call kernel_sysroute_seg_sel:read_one_disk_sector
+
+    ;从用户程序头部获取用户程序字节数
+    mov eax,[user_header_buffer]
+    mov ebx,eax
+    and ebx,0xfffffe00
+    add ebx,512
+    test eax,0x1ff
+    cmovnz eax,ebx
+
+    ;为用户程序分配内存
+    mov ecx,eax
+    call kernel_sysroute_seg_sel:allocate_memory
+    push ecx
+
+    ;加载整个用户程序
+    push ecx
+    xor edx,edx
+    mov ebx,512
+    div ebx
+    mov ecx,1
+    cmp edx,0
+    cmovnz edx,ecx
+    add eax,edx
+    pop ecx
+
+    mov edx,mem_0_4_gb_seg_sel
+    mov ds,edx
+    mov ebx,ecx
+    mov ecx,eax
+    mov eax,esi
+.read_sector:
+    call kernel_sysroute_seg_sel:read_one_disk_sector
+    inc eax
+    loop .read_sector
+
+    ;添加用户程序的段
+    pop ecx
+    mov edi,ecx
+
+    ;用户程序header段
+    mov eax,edi
+    mov ebx,[edi+0x04]
+    dec ebx
+    mov ecx,0x00409200
+    call kernel_sysroute_seg_sel:make_seg_descriptor
+    call kernel_sysroute_seg_sel:install_gdt_descriptor
+    mov [edi+0x04],cx       ;回填段选择子
+    mov [edi+0x06],cx
+    
+    ;用户数据段
+    mov eax,edi
+    add eax,[edi+0x10]
+    mov ebx,[edi+0x14]
+    dec ebx
+    mov ecx,0x00409200
+    call kernel_sysroute_seg_sel:make_seg_descriptor
+    call kernel_sysroute_seg_sel:install_gdt_descriptor
+    mov [edi+0x10],cx       ;回填段选择子
+    mov [edi+0x12],cx
+    
+    ;用户代码段
+    mov eax,edi
+    add eax,[edi+0x1c]
+    mov ebx,[edi+0x20]
+    dec ebx
+    mov ecx,0x00409800
+    call kernel_sysroute_seg_sel:make_seg_descriptor
+    call kernel_sysroute_seg_sel:install_gdt_descriptor
+    mov [edi+0x1c],cx       ;回填段选择子
+    mov [edi+0x1e],cx
+
+    ;用户栈段
+    mov eax,[edi+0x0c]
+    xor edx,edx
+    mov ebx,4096
+    mul ebx
+    mov ecx,eax
+    call kernel_sysroute_seg_sel:allocate_memory
+    mov ebx,eax
+    mov eax,ecx
+    mov ecx,0x00409600
+    call kernel_sysroute_seg_sel:make_seg_descriptor
+    call kernel_sysroute_seg_sel:install_gdt_descriptor
+    mov [edi+0x08],cx       ;回填段选择子
+    mov [edi+0x0a],cx
+
+    ;重定位salt
+    mov ecx,[edi+0x24]
+    mov esi,edi
+    add esi,0x28
+
+    mov eax,kernel_data_seg_sel
+    mov es,eax
+
+    cld
+
+    push edi
+.for_each_user_item:
+    push esi
+    push ecx
+    mov edi,salt
+
+    mov eax,esi
+    mov ebx,edi
+    sub ebx,256+6
+.next_kernel_salt_item:
+    mov esi,eax
+    add ebx,256+6
+    mov edi,ebx
+    mov ecx,64          ;256/4=64
+    repe cmpsd
+    jnz .next_kernel_salt_item
+
+    mov eax,[es:edi]
+    mov bx,[es:edi+0x4]
+    mov [esi-256],eax
+    mov [esi-252],bx
+
+    pop ecx
+    pop esi
+    add esi,256
+    loop .for_each_user_item
+    pop edi
+
+    mov ax,[edi+0x04]
+
+    pop es
+    pop ds
+    pop esi
+    pop edi
+    pop edx
+    pop ecx
+    pop ebx
+
     ret
 
 start:
     mov eax,kernel_data_seg_sel
     mov ds,eax
+
+    mov eax,kernel_stack_seg_sel
+    mov ss,eax
+    xor esp,esp
 
     mov ebx,return_str
     call kernel_sysroute_seg_sel:putstr
@@ -500,11 +667,26 @@ start:
     mov ebx,return_str
     call kernel_sysroute_seg_sel:putstr
     call kernel_sysroute_seg_sel:putstr
-
     mov ebx,msg_1
     call kernel_sysroute_seg_sel:putstr
 
+    mov esi,user_prog_start_sector
+    call load_relocate_user_program
+
+    mov ds,ax
+    jmp far [0x18]
+
 return_point:
+    mov eax,kernel_data_seg_sel
+    mov ds,eax
+
+    mov ebx,return_str
+    call kernel_sysroute_seg_sel:putstr
+    call kernel_sysroute_seg_sel:putstr
+
+    mov ebx,msg_2
+    call kernel_sysroute_seg_sel:putstr
+
     hlt
 kernel_code_end:
 
