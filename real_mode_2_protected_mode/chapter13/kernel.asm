@@ -135,26 +135,27 @@ putchar:
 .roll_screen:
     cmp bx,2000     ;80*25=2000, 表示光标超出屏幕，需要滚屏
     jl  .set_cursor
+
     push ds
     push es
+
     mov ax,video_ram_seg_sel    ;显存段
     mov ds,ax
     mov es,ax
     cld
     mov edi,0
-    mov esi,80      ;80
+    mov esi,160     ;一行80个字符*2字节每字符
     mov ecx,1920    ;2000-80
     rep movsw       ;每行字符往上移一行
 
     ;以黑底白字的空格符填充最后一行
-    mov bx,3840     ;1920*2
     mov cx,80
 .clr_char:
     mov word [es:edi],0x0720
     add edi,2
     loop .clr_char
-    mov bx,1920
 
+    mov bx,1920
     pop es
     pop ds
 

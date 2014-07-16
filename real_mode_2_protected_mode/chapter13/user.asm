@@ -30,7 +30,7 @@ prog_msg_1  db 0x0a,0x0d,0x0a,0x0d
             db 0x0a,0x0d,0
 prog_msg_2  db 'DiskData:',0x0a,0x0d,0
 buffer times 1024 db 0
-prog_msg_3  db 'User Program finish',0x0a,0x0d,0
+prog_msg_3  db 0x0a,0x0d,'User Program finish',0x0a,0x0d,0
 user_data_end:
 
 [bits 32]
@@ -54,6 +54,7 @@ start:
     call far [fs:PrintString]
 
     mov ebx,buffer
+    mov byte [buffer+512],0
     call far [fs:PrintString]
     
     mov ebx,prog_msg_3
