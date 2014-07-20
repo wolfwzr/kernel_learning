@@ -269,6 +269,7 @@ read_one_disk_sector:
     retf
 
 ;make_seg_descriptor函数
+;
 ;功能：
 ;   构造段描述符
 ;参数：
@@ -293,7 +294,32 @@ make_seg_descriptor:
 
     retf
 
+;make_call_gate_descriptor函数
+;
+;功能：
+;   构造段描述符
+;参数：
+;   ax  = 目标代码段选择子
+;   ebx = 段内偏移值
+;   cx  = 属性（各属性位都在原始位置，没用到的位为0）
+;输出：
+;   edx:eax 完整的段描述符
+make_call_gate_descriptor:
+    push ebx
+    push ecx
+
+    shl eax,16          ;设置段选择子
+    mov ax,bx           ;设置段偏移15:0
+    mov bx,0
+    and edx,ebx         ;设置段偏移31:16
+    mov dx,cx           ;设置属性
+
+    pop ecx
+    pop ebx
+    retf
+
 ;install_gdt_descriptor函数
+;
 ;功能：
 ;   安装段描述符到GDT并返回段选择子
 ;参数：
@@ -346,6 +372,7 @@ install_gdt_descriptor:
     retf
 
 ;allocate_memory函数
+;
 ;功能：
 ;   分配指定大小的内存区域
 ;参数：
@@ -379,6 +406,7 @@ allocate_memory:
     retf
 
 ;put_hex_dword函数
+;
 ;功能：
 ;   在当前光标位置以字符形式（0xABCD）打印一个双字，并推进光标位置
 ;参数：
@@ -440,6 +468,8 @@ cpu_brand   times   64  db 0
 msg_3       db 'User Program Loaded.', 0
 msg_2       db 'Back from user program', 0
 
+tcb_chain   dd 0
+
 user_header_buffer  times 512 db 0
 
 salt:
@@ -472,27 +502,104 @@ kernel_data_end:
 ;内核代码段
 SECTION kernel_code vstart=0
 
+;fill_descriptor_in_ldt函数
+;
+;作用：
+;    将描述符添加到ldt表
+;参数：
+;    edx:eax = 描述符
+;    ebx = tcb线性基地址
+;输出：
+;    cx = 选择子
+fill_descriptor_in_ldt:
+    push eax
+    push edx
+    push ds
+
+    push ecx
+
+    mov ecx,mem_0_4_gb_seg_sel
+    mov ds,ecx
+
+    push eax
+    mov ecx,[ebx+0x0c]    
+    movzx eax,word [ebx+0x0a]
+    add ecx,eax
+    pop eax
+
+    mov [ecx],eax               ;描写描述符
+    mov [ecx+0x04],edx
+    add word [ebx+0x0a],8       ;更新LDT界限值
+
+    movzx eax,word [ebx+0x0a]
+    xor edx,edx
+    mov ecx,8
+    div ecx
+
+    pop ecx
+    
+    shl ax,3
+    or ax,0x7                   ;LDT,RPL=3
+    mov cx,ax
+
+    pop ds
+    pop edx
+    pop eax
+
+    ret
+
+;append_to_tcb_link函数
+;
+;作用：
+;    将TCB添加到TCB链中
+;参数：
+;    ecx = TCB线性基地址
+;输出：
+;    无
+append_to_tcb_link:
+    push eax
+    push ds
+    push es
+    
+    mov eax,kernel_data_seg_sel
+    mov ds,eax
+
+    mov eax,mem_0_4_gb_seg_sel
+    mov es,eax
+
+    mov eax,[tcb_chain]
+    mov [es:ecx],eax
+    mov [tcb_chain],ecx
+
+    pop es
+    pop ds
+    pop eax
+
+    ret
+
 ;load_relocate_user_program函数
 ;
 ;作用：
 ;   从硬盘加载用户程序到内存，为其添加段选择子并重定位salt
 ;参数：
-;   esi = 用户程序起始逻辑扇区号
+;   push = 用户程序起始逻辑扇区号
+;   push = TCB线性基地址
 ;输出：
-;   ax = 用户header段的选择子
+;   无
 load_relocate_user_program:
-    push ebx
-    push ecx
-    push edx
-    push edi
-    push esi
+    pushad
+
     push ds
     push es
 
     mov eax,kernel_data_seg_sel
     mov ds, eax
 
+    mov ebp,esp
+
     ;加载用户程序的第一扇区
+    mov esi,[ebp+12*4]      ;11=push tcb基地址(1) + pushad(8) +
+                            ;   push ds(1) + push es(1) + push cs(1)
     mov eax,esi
     mov ebx,user_header_buffer
     call kernel_sysroute_seg_sel:read_one_disk_sector
@@ -531,17 +638,30 @@ load_relocate_user_program:
     inc eax
     loop .read_sector
 
-    ;添加用户程序的段
-    pop ecx
+    mov edi,[ebp+11*4]      ;取TCB线性基地址
+
+    ;创建LDT
+    mov ecx,160             ;8*20 LDT内最多20条描述符
+    call kernel_sysroute_seg_sel:allocate_memory
+
+    mov eax,ecx
+    mov ebx,160-1
+    mov ecx,0x0040e200
+    mov [edi+0x0c],eax      ;填写LDT基地址到TCB
+    mov [edi+0x0a],ebx      ;填写LDT界限到TCB
+    call kernel_sysroute_seg_sel:make_seg_descriptor
+    mov [edi+0x10],cx       ;填写LDT选择子到TCB
+
+    pop ecx                 ;恢复用户程序内存线性地址
     mov edi,ecx
 
     ;用户程序header段
     mov eax,edi
     mov ebx,[edi+0x04]
     dec ebx
-    mov ecx,0x00409200
+    mov ecx,0x0040f200
     call kernel_sysroute_seg_sel:make_seg_descriptor
-    call kernel_sysroute_seg_sel:install_gdt_descriptor
+    call fill_descriptor_in_ldt
     mov [edi+0x04],cx       ;回填段选择子
     mov [edi+0x06],cx
     
@@ -550,9 +670,9 @@ load_relocate_user_program:
     add eax,[edi+0x10]
     mov ebx,[edi+0x14]
     dec ebx
-    mov ecx,0x00409200
+    mov ecx,0x0040f200
     call kernel_sysroute_seg_sel:make_seg_descriptor
-    call kernel_sysroute_seg_sel:install_gdt_descriptor
+    call fill_descriptor_in_ldt
     mov [edi+0x10],cx       ;回填段选择子
     mov [edi+0x12],cx
     
@@ -561,9 +681,9 @@ load_relocate_user_program:
     add eax,[edi+0x1c]
     mov ebx,[edi+0x20]
     dec ebx
-    mov ecx,0x00409800
+    mov ecx,0x0040f800
     call kernel_sysroute_seg_sel:make_seg_descriptor
-    call kernel_sysroute_seg_sel:install_gdt_descriptor
+    call fill_descriptor_in_ldt
     mov [edi+0x1c],cx       ;回填段选择子
     mov [edi+0x1e],cx
 
@@ -576,9 +696,9 @@ load_relocate_user_program:
     call kernel_sysroute_seg_sel:allocate_memory
     mov ebx,eax
     mov eax,ecx
-    mov ecx,0x00409600
+    mov ecx,0x0040f600
     call kernel_sysroute_seg_sel:make_seg_descriptor
-    call kernel_sysroute_seg_sel:install_gdt_descriptor
+    call fill_descriptor_in_ldt
     mov [edi+0x08],cx       ;回填段选择子
     mov [edi+0x0a],cx
 
@@ -620,15 +740,76 @@ load_relocate_user_program:
     loop .for_each_user_item
     pop edi
 
-    mov ax,[edi+0x04]
+    mov esi,[ebp+11*4]      ;TCB线性基地址
+
+    ;创建0特权级栈
+    mov eax,4096
+    mov ecx,eax
+    call kernel_sysroute_seg_sel:allocate_memory
+    add eax,ecx
+    mov ebx,0xffffe
+    mov ecx,0x00c09600
+    mov [esi+0x1e],eax
+    mov [esi+0x1a],ebx
+    mov dword [esi+0x24],0
+    call kernel_sysroute_seg_sel:make_seg_descriptor
+    call fill_descriptor_in_ldt
+    mov [esi+0x22],cx
+
+    ;创建1特权级栈
+    mov eax,4096
+    mov ecx,eax
+    call kernel_sysroute_seg_sel:allocate_memory
+    add eax,ecx
+    mov ebx,0xffffe
+    mov ecx,0x00c0b600
+    mov [esi+0x2c],eax
+    mov [esi+0x28],ebx
+    mov dword [esi+0x32],0
+    call kernel_sysroute_seg_sel:make_seg_descriptor
+    call fill_descriptor_in_ldt
+    mov [esi+0x30],cx
+
+    ;创建2特权级栈
+    mov eax,4096
+    mov ecx,eax
+    call kernel_sysroute_seg_sel:allocate_memory
+    add eax,ecx
+    mov ebx,0xffffe
+    mov ecx,0x00c0d600
+    mov [esi+0x3a],eax
+    mov [esi+0x36],ebx
+    mov dword [esi+0x40],0
+    call kernel_sysroute_seg_sel:make_seg_descriptor
+    call fill_descriptor_in_ldt
+    mov [esi+0x3e],cx
+
+    ;创建TSS
+    mov ecx,104
+    call kernel_sysroute_seg_sel:allocate_memory
+    call append_to_tcb_link
+
+    mov ax,[esi+0x22]       ;ss0
+    mov [ecx+8],ax
+    mov eax,[esi+0x24]      ;esp0
+    mov [ecx+4],eax
+
+    mov ax,[esi+0x30]       ;ss1
+    mov [ecx+16],ax
+    mov eax,[esi+0x32]      ;esp1
+    mov [ecx+12],eax
+
+    mov ax,[esi+0x3e]       ;ss2
+    mov [ecx+24],ax
+    mov eax,[esi+0x40]      ;esp2
+    mov [ecx+20],eax
+
+    mov ax,[esi+0x10]       ;ldt sector
+    mov [ecx+96],ax
 
     pop es
     pop ds
-    pop esi
-    pop edi
-    pop edx
-    pop ecx
-    pop ebx
+    popad
 
     ret
 
@@ -677,21 +858,53 @@ start:
     mov ebx,msg_1
     call kernel_sysroute_seg_sel:putstr
 
-    mov esi,user_prog_start_sector
+    ;将k-salt中的段选择子改为调用门
+    mov ecx,salt_items
+    mov eax,salt
+.next_kernel_salt_item:
+    push eax
+    push ecx
+
+    mov ax,[eax+260]                ;selector
+    mov ebx,[eax+256]               ;offset
+    mov cx,0xec00                   ;111_0_1100_000_00000B
+    call kernel_sysroute_seg_sel:make_call_gate_descriptor
+    call kernel_sysroute_seg_sel:install_gdt_descriptor
+    mov [eax+260],cx                ;回填调用门选择子
+
+    pop ecx
+    pop eax
+
+    add eax,salt_item_len
+    loop .next_kernel_salt_item
+
+    mov eax,mem_0_4_gb_seg_sel
+    mov ds,eax
+
+    ;分配TCB内存
+    mov ecx,0x46
+    call kernel_sysroute_seg_sel:allocate_memory
+
+    push dword user_prog_start_sector       ;用栈传参
+    push ecx
     call load_relocate_user_program
 
-    mov ds,ax
-    jmp far [0x18]
+    ltr  [ecx+0x18]         ;加载TSS
+    lldt [ecx+0x10]         ;加载LDT
+
+    mov eax,[ecx+0x44]      ;用户程序头部选择子
+    mov ds,eax
+
+    ;伪装成从内核返回应用程序
+    push dword [0x08]       ;用户程序ss
+    push dword 0            ;用户程序esp
+    push dword [0x1c]       ;用户程序入口代码段选择子
+    push dword [0x18]       ;用户程序入口代码段内偏移
+    retf                    ;转到用户程序执行
 
 return_point:
     mov eax,kernel_data_seg_sel
     mov ds,eax
-
-    mov ebx,return_str
-    call kernel_sysroute_seg_sel:putstr
-
-    mov edx,kernel_end
-    call kernel_sysroute_seg_sel:put_hex_dword
 
     mov ebx,return_str
     call kernel_sysroute_seg_sel:putstr
