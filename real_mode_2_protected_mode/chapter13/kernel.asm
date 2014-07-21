@@ -388,6 +388,7 @@ allocate_memory:
 put_hex_dword:
     push eax
     push ebx
+    push ecx
     push edx
     push ds
     
@@ -414,6 +415,7 @@ put_hex_dword:
 
     pop ds
     pop edx
+    pop ecx
     pop ebx
     pop eax
 
@@ -705,5 +707,3 @@ kernel_code_end:
 
 SECTION kernel_tail
 kernel_end:
-
-; vim: set syntax=nasm:

@@ -66,5 +66,3 @@ user_code_end:
 
 SECTION tail
 program_end:
-
-; vim: set syntax=nasm:
