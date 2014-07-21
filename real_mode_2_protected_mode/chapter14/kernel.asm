@@ -774,7 +774,7 @@ load_relocate_user_program:
     ;{{{ 创建0特权级栈
     mov eax,4096
     mov [esi+0x1a],eax          ;填写0特权级栈长度到TCB
-    shr [esi+0x1a],12
+    shr dword [esi+0x1a],12
     mov ecx,eax
     call kernel_sysroute_seg_sel:allocate_memory
     add eax,ecx
@@ -792,7 +792,7 @@ load_relocate_user_program:
     ;{{{ 创建1特权级栈
     mov eax,4096
     mov [esi+0x28],eax
-    shr [esi+0x28],12
+    shr dword [esi+0x28],12
     mov ecx,eax
     call kernel_sysroute_seg_sel:allocate_memory
     add eax,ecx
@@ -811,7 +811,7 @@ load_relocate_user_program:
     ;{{{ 创建2特权级栈
     mov eax,4096
     mov [esi+0x36],eax
-    shr [esi+0x36],12
+    shr dword [esi+0x36],12
     mov ecx,eax
     call kernel_sysroute_seg_sel:allocate_memory
     add eax,ecx
