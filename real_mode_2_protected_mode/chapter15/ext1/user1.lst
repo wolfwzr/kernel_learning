@@ -1,0 +1,55 @@
+     1                                  SECTION header vstart=0
+     2 00000000 [00000000]              program_length      dd  program_end
+     3 00000004 [28030000]              header_lenght       dd  header_end
+     4                                  
+     5 00000008 00000000                stack_seg           dd  0   ;回填栈段选择子
+     6 0000000C 01000000                stack_len           dd  1   ;用户程序希望分配的栈大小，粒度为4KB
+     7                                  
+     8 00000010 [00000000]              user_data_seg       dd section.user_data.start  ;回填数据段选择子
+     9 00000014 [02000000]              user_data_seg_len   dd user_data_end
+    10                                  
+    11 00000018 [00000000]              program_entry       dd start
+    12 0000001C [00000000]              user_code_seg       dd section.user_code.start  ;回填代码段选择子
+    13 00000020 [21000000]              user_code_seg_len   dd user_code_end
+    14                                  
+    15 00000024 03000000                salt_items              dd (salt_end-salt)/256
+    16                                  salt:
+    17 00000028 40526561644469736B-         ReadDiskData        db '@ReadDiskData'
+    18 00000031 44617461           
+    19 00000035 00<rept>                                        times 256-($-ReadDiskData) db 0
+    20 00000128 405072696E74537472-         PrintString         db '@PrintString'
+    21 00000131 696E67             
+    22 00000134 00<rept>                                        times 256-($-PrintString) db 0
+    23 00000228 4052656C6561736543-         ReleaseControl      db '@ReleaseControl'
+    24 00000231 6F6E74726F6C       
+    25 00000237 00<rept>                                        times 256-($-ReleaseControl) db 0
+    26                                  salt_end:
+    27                                  
+    28                                  header_end:
+    29                                  
+    30                                  SECTION user_data vstart=0
+    31 00000000 4100                    prog_msg_1  db 'A', 0
+    32                                  user_data_end:
+    33                                  
+    34                                  [bits 32]
+    35                                  SECTION user_code vstart=0
+    36                                  
+    37                                  start:
+    38 00000000 8CD8                        mov eax,ds                  ;ds被kernel初始为header段选择子
+    39 00000002 8EE0                        mov fs,eax
+    40                                      
+    41 00000004 66A1[10000000]              mov ax,[user_data_seg]
+    42 0000000A 8ED8                        mov ds,ax                   ;现在ds为用户程序数据段选择子
+    43                                      
+    44                                  .print:
+    45 0000000C BB[00000000]                mov ebx,prog_msg_1
+    46 00000011 64FF1D[28010000]            call far [fs:PrintString]
+    47 00000018 64FF1D[28020000]            call far [fs:ReleaseControl]
+    48 0000001F EBEB                        jmp .print
+    49                                  
+    50                                  user_code_end:
+    51                                  
+    52                                  SECTION tail
+    53                                  program_end:
+    54                                  
+    55                                  ; vim: set syntax=nasm:
