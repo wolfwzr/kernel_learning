@@ -1,7 +1,6 @@
 lizhong
 disk.vhd
 *.swp
-*/*.swp
-*/bochs.out
-*/*.bin
-*/*.lst
+*.bin
+*.lst
+bochs.out
