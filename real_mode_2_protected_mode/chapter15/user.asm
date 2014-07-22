@@ -25,10 +25,10 @@ salt_end:
 header_end:
 
 SECTION user_data vstart=0
-prog_msg_1  db 0x0a,0x0d,0x0a,0x0d
-            db 'I am a user program, and I am running at CPL=', 0
-prog_cpl    db '0',0
-prog_msg_2  db ', and I should exit now...',0x0a,0x0d,0
+prog_msg_1  db 0x0a, 0x0d, 'I am a user program, and I am running at CPL=', 0
+prog_cpl    db '0', 0
+prog_msg_2  db ', and I should exit now...', 0x0a, 0x0d, 0
+prog_msg_3  db 0x0a, 0x0d, 'user program comes back!', 0x0a, 0x0d, 0
 user_data_end:
 
 [bits 32]
@@ -56,6 +56,10 @@ start:
 
     call far [fs:TerminateProgram]
 
+    mov ebx,prog_msg_3
+    call far [fs:PrintString]
+
+    call far [fs:TerminateProgram]
 user_code_end:
 
 SECTION tail

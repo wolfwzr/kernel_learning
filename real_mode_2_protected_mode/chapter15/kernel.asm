@@ -475,8 +475,10 @@ cpu_brand   times   64  db 0
 msg_3       db 'User Program Loaded.', 0
 msg_2       db 'Back from user program', 0
 
-return_msg1 db 0x0a, 0x0d, 'Back from user program 1', 0x0a, 0x0d, 0
-return_msg2 db 0x0a, 0x0d, 'Back from user program 2', 0x0a, 0x0d, 0
+return_msg1 db 0x0a, 0x0d, 'Back from user program 1, re-enter...', 0x0a, 0x0d, 0
+return_msg2 db 0x0a, 0x0d, 'Back from user program 2, re-enter...', 0x0a, 0x0d, 0
+
+msg_4       db 0x0a, 0x0d, 'recall user program', 0x0a, 0x0d, 0
 
 terminate_msg1  db 0x0a, 0x0d, 'from call or exception', 0x0a, 0x0d, 0
 terminate_msg2  db 0x0a, 0x0d, 'from jmp', 0x0a, 0x0d, 0
@@ -601,7 +603,7 @@ append_to_tcb_link:
     ret
 ;}}}
 
-;load_relocate_user_program函数;{{{
+;load_relocate_user_program函数{{{
 ;
 ;作用：
 ;   从硬盘加载用户程序到内存，为其添加段选择子并重定位salt
@@ -916,27 +918,35 @@ load_relocate_user_program:
 
 ;terminate_current_task{{{
 terminate_current_task:
-    pushfd              ;将eflags压栈
-    pop edx             ;将eflags出栈到edx中
+    push ebx
+    push ds
 
-    mov eax,kernel_data_seg_sel
-    mov ds,eax
+    mov ebx,kernel_data_seg_sel
+    mov ds,ebx
+
+    pushfd              ;将eflags压栈
+    pop ebx             ;将eflags出栈到ebx中
 
     ;根据eflags的NT位（bit14）来决定用iret还是jmp来进行任务切换
-    test edx,0x4000
+    test ebx,0x4000
     jz .jmp
 
     mov ebx,terminate_msg1
     call kernel_sysroute_seg_sel:putstr
     iretd
+    jmp .ret
 
 .jmp:
     mov ebx,terminate_msg2
     call kernel_sysroute_seg_sel:putstr
     jmp far [prgman_tss]
 
+.ret:
+    pop ds
+    pop ebx
+
     retf
-;}}}
+    ;}}}
 
 ;start{{{
 start:
@@ -1006,7 +1016,7 @@ start:
     loop .next_kernel_salt_item
     ;}}}
 
-    ;为当前内核创建一个任务，称为程序管理任务;{{{
+    ;为当前内核创建一个任务，称为程序管理任务{{{
     mov eax,mem_0_4_gb_seg_sel
     mov ds,eax
 
@@ -1037,7 +1047,7 @@ start:
     ltr cx
     ;}}}
 
-    ;第一个用户程序;{{{
+    ;第一个用户程序{{{
     ;使用call发起任务切换
 
     mov eax,mem_0_4_gb_seg_sel
@@ -1054,19 +1064,30 @@ start:
     push ecx                                ;TCB线性基地址
     call load_relocate_user_program
 
-    ;使用任务切换到用户程序
-    call far [ecx+0x14]
-
     mov eax,kernel_data_seg_sel
     mov ds,eax
+
+    mov eax,mem_0_4_gb_seg_sel
+    mov es,eax
+
+    ;使用任务切换到用户程序
+    call far [es:ecx+0x14]
 
     ;从用户程序返回，打印消息
     mov ebx,return_msg1
     call kernel_sysroute_seg_sel:putstr
+
+    ;再次切换到用户程序
+    call far [es:ecx+0x14]
+
+    ;从用户程序返回，打印消息
+    mov ebx,return_msg1
+    call kernel_sysroute_seg_sel:putstr
+
     ;}}}
 
-    ;第二个用户程序;{{{
-    ;使用jmp发起任务切换
+    ;第二个用户程序{{{
+    ;使用call发起任务切换
 
     mov eax,mem_0_4_gb_seg_sel
     mov ds,eax
@@ -1082,15 +1103,26 @@ start:
     push ecx                                ;TCB线性基地址
     call load_relocate_user_program
 
-    ;使用任务切换到用户程序
-    jmp far [ecx+0x14]
-
     mov eax,kernel_data_seg_sel
     mov ds,eax
+
+    mov eax,mem_0_4_gb_seg_sel
+    mov es,eax
+
+    ;使用任务切换到用户程序
+    jmp far [es:ecx+0x14]
 
     ;从用户程序返回，打印消息
     mov ebx,return_msg2
     call kernel_sysroute_seg_sel:putstr
+
+    ;再次切换到用户程序
+    jmp far [es:ecx+0x14]
+
+    ;从用户程序返回，打印消息
+    mov ebx,return_msg2
+    call kernel_sysroute_seg_sel:putstr
+
     ;}}}
 
     mov ebx,hlt_msg
