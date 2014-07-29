@@ -610,8 +610,8 @@ salt_4      db '@TerminateProgram'
             times (256-($-salt_4))  db 0
             dd terminate_current_task
             dw kernel_code_seg_sel
-
-salt_item_len   equ $-salt_4
+salt_end:
+salt_item_len   equ salt_end-salt_4
 salt_items      equ ($-salt)/salt_item_len
 ;}}}
 
@@ -734,9 +734,14 @@ load_relocate_user_program:
     mov eax,kernel_data_seg_sel
     mov ds, eax
 
+    mov eax,mem_0_4_gb_seg_sel
+    mov es,eax
+
     mov ebp,esp
+    mov edi,[ebp+11*4]          ;取TCB线性基地址
 
     ;{{{ 加载用户程序到内存
+
     ;加载用户程序的第一扇区
     mov esi,[ebp+12*4]      ;12=push tcb基地址(1) + pushad(8) +
                             ;   push ds(1) + push es(1) + push cs(1)
@@ -752,15 +757,21 @@ load_relocate_user_program:
     test eax,0x1ff
     cmovnz eax,ebx
 
-    ;为用户程序分配内存
-    mov ebx,[kernel_next_laddr]
-    call kernel_sysroute_seg_sel:allocate_memory
-    add dword [kernel_next_laddr],4096
-    mov ecx,ebx
+    mov ecx,[es:edi+0x06]       ;下一个可用线性基地址    
     push ecx
 
+    ;为用户程序分配内存
+
+    push eax
+    mov ecx,eax
+.alloc_page:
+    mov ebx,[es:edi+0x06]       ;下一个可用线性基地址    
+    add dword [es:edi+0x06],4096
+    call kernel_sysroute_seg_sel:allocate_memory
+    loop .alloc_page
+    pop eax
+
     ;加载整个用户程序
-    push ecx
     xor edx,edx
     mov ebx,512
     div ebx
@@ -768,7 +779,6 @@ load_relocate_user_program:
     cmp edx,0
     cmovnz edx,ecx
     add eax,edx
-    pop ecx
 
     mov edx,mem_0_4_gb_seg_sel
     mov ds,edx
@@ -780,16 +790,10 @@ load_relocate_user_program:
     inc eax
     loop .read_sector
     ;}}}
-
-    mov edi,[ebp+11*4]          ;取TCB线性基地址
     
-    pop ecx
-    mov [edi+0x06],ecx          ;填写用户程序基地址到TCB中
-    push ecx
-
     ;{{{ 创建LDT并填写到TCB中
-    mov ebx,400
-    mov ecx,ebx         ;8*50 LDT内最多50条描述符
+    mov ebx,160
+    mov ecx,ebx         ;8*50 LDT内最多20条描述符
     call kernel_sysroute_seg_sel:allocate_memory
 
     mov eax,ecx
@@ -818,7 +822,6 @@ load_relocate_user_program:
     call fill_descriptor_in_ldt
     mov [edi+0x04],cx           ;回填段选择子
     mov [edi+0x06],cx
-    mov [esi+0x44],cx           ;填写头部选择子到TCB
     ;}}}
     
     ;{{{ 处理用户数据段
@@ -885,6 +888,9 @@ load_relocate_user_program:
 .next_kernel_salt_item:
     mov esi,eax
     mov edi,ebx
+    cmp edi,salt_end
+    jge .ret_each_user_item     ;超出k-salt表,继续处理下一个c-salt项
+
     add ebx,256+6
     mov ecx,64          ;256/4=64
     repe cmpsd
@@ -896,6 +902,7 @@ load_relocate_user_program:
     or bx,0x3               ;使RPL=3
     mov [esi-252],bx
 
+.ret_each_user_item:
     pop ecx
     pop esi
     add esi,256
@@ -905,64 +912,8 @@ load_relocate_user_program:
 
     mov esi,[ebp+11*4]          ;TCB线性基地址
 
-    ;{{{ 创建0特权级栈
-    mov eax,4096
-    mov [esi+0x1a],eax          ;填写0特权级栈长度到TCB
-    shr dword [esi+0x1a],12
-    mov ecx,eax
-    call kernel_sysroute_seg_sel:allocate_memory
-    add eax,ecx
-    mov ebx,0xffffe
-    mov ecx,0x00c09600
-    mov [esi+0x1e],eax          ;填写0特权级栈基地址到TCB
-    mov dword [esi+0x24],0      ;填写0特权级栈初始ESP到TCB
-    call kernel_sysroute_seg_sel:make_seg_descriptor
-    mov ebx,esi
-    call fill_descriptor_in_ldt
-    and cx,0xfffc               ;设置RPL=0
-    mov [esi+0x22],cx           ;填写0特权级栈选择子到TCB
-    ;}}}
-
-    ;{{{ 创建1特权级栈
-    mov eax,4096
-    mov [esi+0x28],eax
-    shr dword [esi+0x28],12
-    mov ecx,eax
-    call kernel_sysroute_seg_sel:allocate_memory
-    add eax,ecx
-    mov ebx,0xffffe
-    mov ecx,0x00c0b600
-    mov [esi+0x2c],eax
-    mov dword [esi+0x32],0
-    call kernel_sysroute_seg_sel:make_seg_descriptor
-    mov ebx,esi
-    call fill_descriptor_in_ldt
-    or cx,1
-    and cx,0xfd
-    mov [esi+0x30],cx
-    ;}}}
-
-    ;{{{ 创建2特权级栈
-    mov eax,4096
-    mov [esi+0x36],eax
-    shr dword [esi+0x36],12
-    mov ecx,eax
-    call kernel_sysroute_seg_sel:allocate_memory
-    add eax,ecx
-    mov ebx,0xffffe
-    mov ecx,0x00c0d600
-    mov [esi+0x3a],eax
-    mov dword [esi+0x40],0
-    call kernel_sysroute_seg_sel:make_seg_descriptor
-    mov ebx,esi
-    call fill_descriptor_in_ldt
-    or cx,2
-    and cx,0xfe
-    mov [esi+0x3e],cx
-    ;}}} 
-
     ;{{{ 创建TSS
-    mov ecx,104
+    mov ebx,[esi,]
     call kernel_sysroute_seg_sel:allocate_memory
     mov [esi+0x14],ecx      ;填写TSS线性基地址到TCB中
 
@@ -1024,6 +975,63 @@ load_relocate_user_program:
     call kernel_sysroute_seg_sel:install_gdt_descriptor
     mov [esi+0x18],cx       ;填写TSS段选择子到TCB中
     ;}}}
+
+
+    ;{{{ 创建0特权级栈
+    mov eax,4096
+    mov [esi+0x1a],eax          ;填写0特权级栈长度到TCB
+    shr dword [esi+0x1a],12
+    mov ecx,eax
+    call kernel_sysroute_seg_sel:allocate_memory
+    add eax,ecx
+    mov ebx,0xffffe
+    mov ecx,0x00c09600
+    mov [esi+0x1e],eax          ;填写0特权级栈基地址到TCB
+    mov dword [esi+0x24],0      ;填写0特权级栈初始ESP到TCB
+    call kernel_sysroute_seg_sel:make_seg_descriptor
+    mov ebx,esi
+    call fill_descriptor_in_ldt
+    and cx,0xfffc               ;设置RPL=0
+    mov [esi+0x22],cx           ;填写0特权级栈选择子到TCB
+    ;}}}
+
+    ;{{{ 创建1特权级栈
+    mov eax,4096
+    mov [esi+0x28],eax
+    shr dword [esi+0x28],12
+    mov ecx,eax
+    call kernel_sysroute_seg_sel:allocate_memory
+    add eax,ecx
+    mov ebx,0xffffe
+    mov ecx,0x00c0b600
+    mov [esi+0x2c],eax
+    mov dword [esi+0x32],0
+    call kernel_sysroute_seg_sel:make_seg_descriptor
+    mov ebx,esi
+    call fill_descriptor_in_ldt
+    or cx,1
+    and cx,0xfd
+    mov [esi+0x30],cx
+    ;}}}
+
+    ;{{{ 创建2特权级栈
+    mov eax,4096
+    mov [esi+0x36],eax
+    shr dword [esi+0x36],12
+    mov ecx,eax
+    call kernel_sysroute_seg_sel:allocate_memory
+    add eax,ecx
+    mov ebx,0xffffe
+    mov ecx,0x00c0d600
+    mov [esi+0x3a],eax
+    mov dword [esi+0x40],0
+    call kernel_sysroute_seg_sel:make_seg_descriptor
+    mov ebx,esi
+    call fill_descriptor_in_ldt
+    or cx,2
+    and cx,0xfe
+    mov [esi+0x3e],cx
+    ;}}} 
 
     pop es
     pop ds
@@ -1259,6 +1267,7 @@ flush:
     add dword [kernel_next_laddr],4096
     mov ecx,ebx
     call append_to_tcb_link
+    mov dword [es:ebx+0x06],0               ;设置任务下一个可用线性地址为0
 
     ;加载用户程序
                                             ;用栈传参
@@ -1278,45 +1287,6 @@ flush:
 
     ;从用户程序返回，打印消息
     mov ebx,return_msg1
-    call kernel_sysroute_seg_sel:putstr
-
-    ;}}}
-
-    ;第二个用户程序{{{
-    ;使用call发起任务切换
-
-    mov eax,mem_0_4_gb_seg_sel
-    mov ds,eax
-
-    ;分配TCB内存
-    mov ecx,0x46
-    call kernel_sysroute_seg_sel:allocate_memory
-    call append_to_tcb_link
-
-    ;加载用户程序
-                                            ;用栈传参
-    push dword user_prog_start_sector       ;用户程序硬盘起始扇区号
-    push ecx                                ;TCB线性基地址
-    call load_relocate_user_program
-
-    mov eax,kernel_data_seg_sel
-    mov ds,eax
-
-    mov eax,mem_0_4_gb_seg_sel
-    mov es,eax
-
-    ;使用任务切换到用户程序
-    jmp far [es:ecx+0x14]
-
-    ;从用户程序返回，打印消息
-    mov ebx,return_msg2
-    call kernel_sysroute_seg_sel:putstr
-
-    ;再次切换到用户程序
-    jmp far [es:ecx+0x14]
-
-    ;从用户程序返回，打印消息
-    mov ebx,return_msg2
     call kernel_sysroute_seg_sel:putstr
 
     ;}}}
