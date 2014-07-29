@@ -11,14 +11,17 @@
 ;   1. salt
 ;
 
-video_ram_seg_sel       equ 0x10    ;显存段选择子
 mem_0_4_gb_seg_sel      equ 0x08    ;0-4G内存数据段选择子
-kernel_data_seg_sel     equ 0x30    ;内核数据段选择子
-kernel_code_seg_sel     equ 0x38    ;内核代码段选择子
+video_ram_seg_sel       equ 0x10    ;显存段选择子
 kernel_stack_seg_sel    equ 0x20    ;内核栈段选择子
 kernel_sysroute_seg_sel equ 0x28    ;内核系统例程段选择子
+kernel_data_seg_sel     equ 0x30    ;内核数据段选择子
+kernel_code_seg_sel     equ 0x38    ;内核代码段选择子
 
 user_prog_start_sector  equ 40      ;用户程序起始逻辑扇区号
+
+kernel_pde_phy_addr     equ 0x20000 ;内核页目录表物理地址
+kernel_pte_phy_addr     equ 0x21000 ;内核0-1MB内存对应页表物理地址
 
 kernel_len      dd  kernel_end
 kenerl_section  dd  section.sys_routine.start 
@@ -452,6 +455,101 @@ put_hex_dword:
 
     retf
 ;}}}
+;alloc_a_4KB_page_mem函数;{{{
+;
+;功能：
+;   通过查找内存位表找到一个未使用的页，转换成页的物理地址返回
+;参数：
+;   无
+;输出：
+;   eax = 分配好的页物理地址
+alloc_a_4KB_page_mem:
+    push ebx
+    push ds
+
+    mov eax,kernel_data_seg_sel
+    mov ds,eax
+
+    mov eax,page_bit_map
+    mov ebx,0
+.check_next_bit:
+    bts [page_bit_map],ebx
+    jnc .get_a_page
+
+    inc ebx
+    cmp ebx,page_map_len*8
+    jl .check_next_bit
+
+    mov ebx,out_of_mem_msg
+    call kernel_sysroute_seg_sel:putstr
+
+    hlt
+
+.get_a_page:
+    mov eax,ebx
+    shl eax,12
+    or eax,0x7
+
+    pop ds
+    pop ebx
+
+    ret
+;}}}
+;alloc_inst_a_page函数;{{{
+;
+;功能：
+;   为线性地址创建或填写PDE,PTE和Page
+;参数：
+;   ebx = 页的线性地址
+;输出：
+;   无
+alloc_inst_a_page:
+    push eax
+    push ebx
+    push ecx
+    push ds
+
+    mov eax,mem_0_4_gb_seg_sel
+    mov ds,eax
+
+    ;检查页目录项
+    mov ecx,ebx
+    shr ecx,22
+    shl ecx,2
+    or ecx,0xfffff000
+
+    mov eax,[ecx]
+    test eax,1
+    jnz .pte
+
+    call alloc_a_4KB_page_mem   ;分配一张页表
+    mov [ecx],eax
+
+    ;检查页表项
+.pte:
+    and eax,0xfffff000
+    mov ecx,ebx
+    shl ecx,10
+    shr ecx,22
+    shl ecx,2
+    or ecx,eax
+
+    mov eax,[ecx]
+    test eax,1
+    jnz .page
+
+    call alloc_a_4KB_page_mem   ;分配一页
+    mov [ecx],eax
+
+.page:
+
+    pop ds
+    pop ecx
+    pop ebx
+    pop eax
+
+    retf
+;}}}
 
 sys_routine_end:
 ;}}}
@@ -463,17 +561,18 @@ SECTION kernel_data vstart=0
 pgdt    dw  0
         dd  0
 ;allocate_memory函数用来存储下一个分配地址
-memory  dd  0x00100000
+memory  dd  0x100000
 ;put_hex_dword函数用的十六进制表
 hex_table   db  '0123456789abcdef'
 
 return_str  db 0x0a, 0x0d, 0
 
-msg_1       db 'Now is in kernel, prepare to load user program', 0
 cpu_brnd0   db 'CPU INFO: ', 0
 cpu_brand   times   64  db 0
+msg_1       db 'Now is in kernel, prepare to enable page', 0
 msg_3       db 'User Program Loaded.', 0
 msg_2       db 'Back from user program', 0
+test_call_gate_msg  db 'k-salt is convert to call gate, and works fine.', 0
 
 return_msg1 db 0x0a, 0x0d, 'Back from user program 1, re-enter...', 0x0a, 0x0d, 0
 return_msg2 db 0x0a, 0x0d, 'Back from user program 2, re-enter...', 0x0a, 0x0d, 0
@@ -518,6 +617,21 @@ salt_items      equ ($-salt)/salt_item_len
 
 prgman_tss  dd 0
             dw 0
+
+;8*8*8*4KB=64*8*4KB=512*4KB=2MB
+page_bit_map    db  0xff,0xff,0xff,0xff,0xff,0x55,0x55,0xff
+                db  0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff
+                db  0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff
+                db  0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff
+                db  0x55,0x55,0x55,0x55,0x55,0x55,0x55,0x55
+                db  0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+                db  0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+                db  0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+page_map_len    equ $-page_bit_map
+
+kernel_next_laddr dd 0x80100000
+
+out_of_mem_msg  db 'Out of memory, hlt', 0
 
 kernel_data_end:
 ;}}}
@@ -639,8 +753,10 @@ load_relocate_user_program:
     cmovnz eax,ebx
 
     ;为用户程序分配内存
-    mov ecx,eax
+    mov ebx,[kernel_next_laddr]
     call kernel_sysroute_seg_sel:allocate_memory
+    add dword [kernel_next_laddr],4096
+    mov ecx,ebx
     push ecx
 
     ;加载整个用户程序
@@ -998,6 +1114,81 @@ start:
     call kernel_sysroute_seg_sel:putstr
     ;}}}
 
+    ;开启分页机制{{{
+    mov eax,mem_0_4_gb_seg_sel
+    mov es,eax
+
+    ;PTE
+    mov eax,kernel_pde_phy_addr
+    mov ebx,kernel_pte_phy_addr
+    or ebx,0x3                  ;r/w=1,p=1
+    mov [es:eax],ebx
+
+    ;PDE高半部分地址(线性地址0x80000000-0xffffffff)划为内核使用
+    mov [es:eax+512*4],ebx
+
+    ;将PDE最高目录项指向PDE自己
+    mov edx,eax
+    or edx,0x3
+    mov [es:eax+4092],edx
+
+    ;PDE
+    mov cr3,edx
+
+    ;分配0-1MB到PTE
+    mov ecx,256                 ;1MB = 4KB * 256
+    mov eax,kernel_pte_phy_addr
+    mov ebx,0
+.next_page:
+    mov edx,ebx
+    or edx,0x3                  ;r/w=1,p=1
+    mov [es:eax],edx
+    add ebx,4096
+    add eax,4
+    loop .next_page
+
+    ;设置该页表其它表项(1MB-4MB)为无效
+    mov ecx,256*3
+.next_null_page:
+    mov dword [es:eax],0
+    add eax,4
+    loop .next_null_page
+
+    ;开启分页机制
+    mov eax,cr0
+    or eax,0x80000000           ;cr0最高位置1
+    mov cr0,eax
+    ;}}}
+
+    ;将GDT中的段描述符基地改为0x80000000以上地址{{{
+    sgdt [pgdt]
+    mov ebx,[pgdt+0x2]
+
+    or dword [es:ebx+0x10+4],0x80000000
+    or dword [es:ebx+0x18+4],0x80000000
+    or dword [es:ebx+0x20+4],0x80000000
+    or dword [es:ebx+0x28+4],0x80000000
+    or dword [es:ebx+0x30+4],0x80000000
+    or dword [es:ebx+0x38+4],0x80000000
+
+    or dword [ppdt+0x2],0x80000000  ;GDT基地址改为0x80000000以上
+    lgdt [pgdt]                     ;更新GDT
+    ;}}}
+
+    ;刷新当前使用的段{{{
+    jmp kernel_code_seg_sel:flush   ;刷新cs
+
+flush:
+    mov eax,kernel_data_seg_sel     ;刷新ds
+    mov ds,eax
+
+    mov eax,mem_0_4_gb_seg_sel      ;刷新es
+    mov es,eax
+
+    mov eax,kernel_stack_seg_sel    ;刷新ss
+    mov ss,eax
+    ;}}}
+
     ;将k-salt中的段选择子改为调用门{{{
     mov ecx,salt_items
     mov edx,salt
@@ -1014,17 +1205,26 @@ start:
     add edx,salt_item_len
     pop ecx
     loop .next_kernel_salt_item
+
+    ;对门进行测试
+    mov ebx,test_call_gate_msg
+    call far [salt_1+256]
     ;}}}
 
     ;为当前内核创建一个任务，称为程序管理任务{{{
     mov eax,mem_0_4_gb_seg_sel
     mov ds,eax
 
-    ;分配TSS内存
-    mov ecx,104
+    mov eax,kernel_data_seg_sel
+    mov es,eax
+
+    ;为TSS分配一页内存
+    mov ebx,[es:kernel_next_laddr];
     call kernel_sysroute_seg_sel:allocate_memory
+    add dword [es:kernel_next_laddr],4096
 
     ;填写TSS部分字段
+    mov ecx,ebx
     mov word [ecx],0        ;上一个任务链接置为0
     mov word [ecx+96],0     ;LDT置为0
     mov word [ecx+100],0    ;T位置为0
@@ -1037,9 +1237,6 @@ start:
     call kernel_sysroute_seg_sel:make_seg_descriptor
     call kernel_sysroute_seg_sel:install_gdt_descriptor
 
-    mov eax,kernel_data_seg_sel
-    mov es,eax
-
     ;将TSS选择子填入内核数据段prgman_tss内存处
     mov word [es:prgman_tss+0x4],cx
 
@@ -1050,12 +1247,17 @@ start:
     ;第一个用户程序{{{
     ;使用call发起任务切换
 
-    mov eax,mem_0_4_gb_seg_sel
+    mov eax,kernel_data_seg_sel
     mov ds,eax
 
+    mov eax,mem_0_4_gb_seg_sel
+    mov es,eax
+
     ;分配TCB内存
-    mov ecx,0x46
+    mov ebx,[kernel_next_laddr]
     call kernel_sysroute_seg_sel:allocate_memory
+    add dword [kernel_next_laddr],4096
+    mov ecx,ebx
     call append_to_tcb_link
 
     ;加载用户程序
@@ -1063,12 +1265,6 @@ start:
     push dword user_prog_start_sector       ;用户程序硬盘起始扇区号
     push ecx                                ;TCB线性基地址
     call load_relocate_user_program
-
-    mov eax,kernel_data_seg_sel
-    mov ds,eax
-
-    mov eax,mem_0_4_gb_seg_sel
-    mov es,eax
 
     ;使用任务切换到用户程序
     call far [es:ecx+0x14]
