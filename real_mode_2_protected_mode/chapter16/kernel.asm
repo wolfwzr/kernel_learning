@@ -740,11 +740,20 @@ load_relocate_user_program:
     mov ebp,esp
     mov edi,[ebp+11*4]          ;取TCB线性基地址
 
+    ;清空内核线性地址0x0-0x7fffffff{{{
+    mov ecx,512                 ;512个PDE
+    mov eax,0xfffff000
+.clear_next_pde:
+    mov dword [es:eax],0
+    add eax,4
+    loop .clear_next_pde
+    ;}}}
+
     ;{{{ 加载用户程序到内存
 
     ;加载用户程序的第一扇区
-    mov esi,[ebp+12*4]      ;12=push tcb基地址(1) + pushad(8) +
-                            ;   push ds(1) + push es(1) + push cs(1)
+    mov esi,[ebp+12*4]          ;12=push tcb基地址(1) + pushad(8) +
+                                ;   push ds(1) + push es(1) + push cs(1)
     mov eax,esi
     mov ebx,user_header_buffer
     call kernel_sysroute_seg_sel:read_one_disk_sector
@@ -757,34 +766,37 @@ load_relocate_user_program:
     test eax,0x1ff
     cmovnz eax,ebx
 
-    mov ecx,[es:edi+0x06]       ;下一个可用线性基地址    
+    mov ecx,[es:edi+0x06]       ;从TCB中获取下一个可用线性基地址
     push ecx
 
     ;为用户程序分配内存
-
     push eax
+    mov ebx,eax
+    and ebx,0xfffff000
+    add ebx,4096
+    test eax,0xfff
+    cmovnz eax,ebx
+
     mov ecx,eax
+    shr ecx,12
 .alloc_page:
-    mov ebx,[es:edi+0x06]       ;下一个可用线性基地址    
+    mov ebx,[es:edi+0x06]       ;从TCB中获取下一个可用线性基地址    
     add dword [es:edi+0x06],4096
     call kernel_sysroute_seg_sel:allocate_memory
     loop .alloc_page
     pop eax
 
     ;加载整个用户程序
-    xor edx,edx
-    mov ebx,512
-    div ebx
-    mov ecx,1
-    cmp edx,0
-    cmovnz edx,ecx
-    add eax,edx
-
     mov edx,mem_0_4_gb_seg_sel
     mov ds,edx
+
+    pop ecx
     mov ebx,ecx
+    push ecx
+
+    shr eax,9                   ;2^9=512
     mov ecx,eax
-    mov eax,esi
+    mov eax,esi                 ;逻辑扇区号
 .read_sector:
     call kernel_sysroute_seg_sel:read_one_disk_sector
     inc eax
@@ -792,11 +804,12 @@ load_relocate_user_program:
     ;}}}
     
     ;{{{ 创建LDT并填写到TCB中
-    mov ebx,160
-    mov ecx,ebx         ;8*50 LDT内最多20条描述符
-    call kernel_sysroute_seg_sel:allocate_memory
+    mov ebx,[es:edi+0x06]       ;从TCB中获取下一个可用线性基地址
+    call kernel_sysroute_seg_sel:alloc_inst_a_page
+    add dword [es:edi+0x06],4096
 
-    mov eax,ecx
+    mov eax,ebx
+    mov ebx,160                 ;8*20 LDT内最多20条描述符
     dec ebx
     mov ecx,0x0040e200
     mov [edi+0x0c],eax          ;填写LDT基地址到TCB
@@ -816,7 +829,9 @@ load_relocate_user_program:
     mov eax,edi
     mov ebx,[edi+0x04]
     dec ebx
-    mov ecx,0x0040f200
+    mov eax,0
+    mov ebx,0xfffff
+    mov ecx,0x00c0f200
     call kernel_sysroute_seg_sel:make_seg_descriptor
     mov ebx,esi
     call fill_descriptor_in_ldt
@@ -851,20 +866,27 @@ load_relocate_user_program:
     ;}}}
 
     ;{{{ 处理用户栈段
-    mov eax,[edi+0x0c]
-    xor edx,edx
-    mov ebx,4096
-    mul ebx
+    mov eax,[edi+0x0c]          ;用户程序希望栈的大小（4KB为单位）
     mov ecx,eax
-    call kernel_sysroute_seg_sel:allocate_memory
-    mov ebx,eax
-    mov eax,ecx
-    mov ecx,0x0040f600
+.alloc_page_2:
+    mov ebx,[esi+0x06]
+    add dword [esi+0x06],4096
+    call kernel_sysroute_seg_sel:alloc_inst_a_page
+    loop .alloc_page_2
+
+    mov eax,0
+    mov ebx,0xfffff             ;4GB
+    mov ecx,0x00c0f200          ;4KB粒度，DPL=3, expand-up
     call kernel_sysroute_seg_sel:make_seg_descriptor
     mov ebx,esi
     call fill_descriptor_in_ldt
     mov [edi+0x08],cx           ;回填段选择子
     mov [edi+0x0a],cx
+    
+    mov eax,[edi+0x14]          ;从TCB中获取TSS基地址
+    mov [eax+80],cx             ;填写ss到TSS中
+    mov eax,[edi+0x06]
+    mov [eax+56],eax            ;填写esp到TSS中
     ;}}}
 
     ;{{{ 重定位salt
