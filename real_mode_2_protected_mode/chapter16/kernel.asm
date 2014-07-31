@@ -787,6 +787,7 @@ load_relocate_user_program:
     pop eax
 
     ;加载整个用户程序
+
     mov edx,mem_0_4_gb_seg_sel
     mov ds,edx
 
@@ -801,68 +802,76 @@ load_relocate_user_program:
     call kernel_sysroute_seg_sel:read_one_disk_sector
     inc eax
     loop .read_sector
+
+    mov edx,kernel_data_seg_sel
+    mov ds,edx
     ;}}}
     
-    ;{{{ 创建LDT并填写到TCB中
-    mov ebx,[es:edi+0x06]       ;从TCB中获取下一个可用线性基地址
+    ;创建TSS{{{
+    mov ebx,[kernel_next_laddr]
+    mov esi,ebx
+    add dword [kernel_next_laddr],4096
+    call kernel_sysroute_seg_sel:alloc_inst_a_page
+
+    mov eax,esi
+    mov ebx,104-1
+    mov ecx,0x00408900      ;TSS, DPL=0
+    call kernel_sysroute_seg_sel:make_seg_descriptor
+    call kernel_sysroute_seg_sel:install_gdt_descriptor
+
+    mov word [es:edi+0x12],104      ;填写TSS界限值到TCB
+    mov [es:edi+0x14],esi           ;填写TSS线性基地址到TCB
+    mov [es:edi+0x18],cx            ;填写TSS选择子到TCB
+
+    mov dword [es:esi+60],0         ;填写ebp到TSS
+    mov dword [es:esi+64],0         ;填写esi到TSS
+    mov dword [es:esi+68],0         ;填写edi到TSS
+    mov word  [es:esi+0],0          ;填写上一个TSS链接
+    mov word  [es:esi+102],104      ;填写IOMap到TSS
+    ;}}}
+
+    ;创建LDT并填写到TCB中{{{
+    mov ebx,[es:edi+0x06]           ;从TCB中获取下一个可用线性基地址
     call kernel_sysroute_seg_sel:alloc_inst_a_page
     add dword [es:edi+0x06],4096
 
     mov eax,ebx
-    mov ebx,160                 ;8*20 LDT内最多20条描述符
+    mov ebx,160                     ;8*20 LDT内最多20条描述符
     dec ebx
     mov ecx,0x0040e200
-    mov [edi+0x0c],eax          ;填写LDT基地址到TCB
-    mov word [edi+0x0a],0xffff  ;填写LDT当前已用界限到TCB
-                                ;下次往LDT安装新描述符时, 0xffff+1正好为0
+    mov [es:edi+0x0c],eax           ;填写LDT基地址到TCB
+    mov word [es:edi+0x0a],0xffff   ;填写LDT当前已用界限到TCB
+                                    ;下次往LDT安装新描述符时, 0xffff+1正好为0
     call kernel_sysroute_seg_sel:make_seg_descriptor
     call kernel_sysroute_seg_sel:install_gdt_descriptor
-    mov [edi+0x10],cx           ;填写LDT选择子到TCB
+    mov [es:edi+0x10],cx            ;填写LDT选择子到TCB
+    mov [es:esi+96],cx              ;填写LDT选择子到TSS
     ;}}}
 
     pop ecx                     ;恢复用户程序内存线性地址
     mov edi,ecx
 
-    mov esi,[ebp+11*4]          ;TCB基地址
-
-    ;{{{ 处理用户程序header段
-    mov eax,edi
-    mov ebx,[edi+0x04]
-    dec ebx
-    mov eax,0
-    mov ebx,0xfffff
-    mov ecx,0x00c0f200
-    call kernel_sysroute_seg_sel:make_seg_descriptor
-    mov ebx,esi
-    call fill_descriptor_in_ldt
-    mov [edi+0x04],cx           ;回填段选择子
-    mov [edi+0x06],cx
-    ;}}}
-    
     ;{{{ 处理用户数据段
-    mov eax,edi
-    add eax,[edi+0x10]
-    mov ebx,[edi+0x14]
-    dec ebx
-    mov ecx,0x0040f200
+    mov eax,0
+    mov ebx,0xffffe
+    mov ecx,0x00c0f200          ;G=1,DPL=3
     call kernel_sysroute_seg_sel:make_seg_descriptor
-    mov ebx,esi
+    mov ebx,[ebp+11*4]          ;TCB基地址
     call fill_descriptor_in_ldt
-    mov [edi+0x10],cx           ;回填段选择子
-    mov [edi+0x12],cx
+    mov [es:esi+84],cx          ;填写ds到TSS
+    mov [es:esi+72],cx          ;填写es到TSS
+    mov [es:esi+88],cx          ;填写fs到TSS
+    mov [es:esi+92],cx          ;填写gs到TSS
     ;}}}
     
     ;{{{ 处理用户代码段
-    mov eax,edi
-    add eax,[edi+0x1c]
-    mov ebx,[edi+0x20]
-    dec ebx
-    mov ecx,0x0040f800
+    mov eax,0
+    mov ebx,0xffffe
+    mov ecx,0x00c0f800          ;G=1,DPL=3
     call kernel_sysroute_seg_sel:make_seg_descriptor
-    mov ebx,esi
+    mov ebx,[ebp+11*4]          ;TCB基地址
     call fill_descriptor_in_ldt
-    mov [edi+0x1c],cx           ;回填段选择子
-    mov [edi+0x1e],cx
+    mov [es:esi+84],cx          ;填写ds到TSS
     ;}}}
 
     ;{{{ 处理用户栈段
