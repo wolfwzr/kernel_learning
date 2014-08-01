@@ -4,14 +4,15 @@ salt_start      dd salt
 salt_items      dd (salt_end-salt)/256
 
 salt:
-    ReadDiskData        db '@ReadDiskData'
-                        times 256-($-ReadDiskData) db 0
     PrintString         db '@PrintString'
                         times 256-($-PrintString) db 0
     TerminateProgram    db '@TerminateProgram'
                         times 256-($-TerminateProgram) db 0
-    reserved            times 256*500 db 0      ;保留一个空白区，以演示分页
-    ReadDiskData        db  '@ReadDiskData'
+    ;--------------------------------------
+    ;保留一个空白区，以演示分页
+    reserved            times 256*500 db 0          
+    ;--------------------------------------
+    ReadDiskData        db '@ReadDiskData'
                         times 256-($-ReadDiskData) db 0
     PrintDwordAsHex     db  '@PrintDwordAsHexString'
                         times 256-($-PrintDwordAsHex) db 0
