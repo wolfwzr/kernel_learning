@@ -550,6 +550,20 @@ alloc_inst_a_page:
 
     retf
 ;}}}
+;copy_kernel_page_directory函数
+;
+;功能：
+;   复制内核当前页目录到指定页
+;输入：
+;   ebx - 指定的物理地址
+;输出：
+;   无
+copy_kernel_page_directory:
+    mov eax,mem_0_4_gb_seg_sel
+    mov ds,eax
+
+    mov ecx
+    retf
 
 sys_routine_end:
 ;}}}
@@ -739,6 +753,7 @@ load_relocate_user_program:
 
     mov ebp,esp
     mov edi,[ebp+11*4]          ;取TCB线性基地址
+    push edi                    ;局部变量，用于保存用户程序基地址
 
     ;清空内核线性地址0x0-0x7fffffff{{{
     mov ecx,512                 ;512个PDE
@@ -752,8 +767,9 @@ load_relocate_user_program:
     ;{{{ 加载用户程序到内存
 
     ;加载用户程序的第一扇区
-    mov esi,[ebp+12*4]          ;12=push tcb基地址(1) + pushad(8) +
-                                ;   push ds(1) + push es(1) + push cs(1)
+    mov esi,[ebp+12*4]          ;取用户程序起始扇区号
+                                ;12 = push tcb基地址(1) + pushad(8)
+                                ;   + push ds(1) + push es(1) + push cs(1)
     mov eax,esi
     mov ebx,user_header_buffer
     call kernel_sysroute_seg_sel:read_one_disk_sector
@@ -767,7 +783,7 @@ load_relocate_user_program:
     cmovnz eax,ebx
 
     mov ecx,[es:edi+0x06]       ;从TCB中获取下一个可用线性基地址
-    push ecx
+    mov [ebp-0x4],ecx           ;将用户程序基地址设置到局部变量中
 
     ;为用户程序分配内存
     push eax
@@ -782,22 +798,18 @@ load_relocate_user_program:
 .alloc_page:
     mov ebx,[es:edi+0x06]       ;从TCB中获取下一个可用线性基地址    
     add dword [es:edi+0x06],4096
-    call kernel_sysroute_seg_sel:allocate_memory
+    call kernel_sysroute_seg_sel:alloc_inst_a_page
     loop .alloc_page
     pop eax
 
     ;加载整个用户程序
-
     mov edx,mem_0_4_gb_seg_sel
     mov ds,edx
 
-    pop ecx
-    mov ebx,ecx
-    push ecx
-
-    shr eax,9                   ;2^9=512
     mov ecx,eax
+    shr ecx,9                   ;2^9=512
     mov eax,esi                 ;逻辑扇区号
+    mov ebx,[ebp-0x4]           ;获取用户程序基地址
 .read_sector:
     call kernel_sysroute_seg_sel:read_one_disk_sector
     inc eax
@@ -807,30 +819,37 @@ load_relocate_user_program:
     mov ds,edx
     ;}}}
     
+    mov eax,mem_0_4_gb_seg_sel
+    mov ds,eax
+
+    mov eax,kernel_data_seg_sel
+    mov es, eax
+
     ;创建TSS{{{
-    mov ebx,[kernel_next_laddr]
-    mov esi,ebx
-    add dword [kernel_next_laddr],4096
+    mov ebx,[es:kernel_next_laddr]
+    mov esi,ebx                     ;设置esi为TSS基地址
+    add dword [es:kernel_next_laddr],4096
     call kernel_sysroute_seg_sel:alloc_inst_a_page
 
     mov eax,esi
     mov ebx,104-1
-    mov ecx,0x00408900      ;TSS, DPL=0
+    mov ecx,0x00408900              ;TSS, DPL=0
     call kernel_sysroute_seg_sel:make_seg_descriptor
     call kernel_sysroute_seg_sel:install_gdt_descriptor
 
-    mov word [es:edi+0x12],104      ;填写TSS界限值到TCB
-    mov [es:edi+0x14],esi           ;填写TSS线性基地址到TCB
-    mov [es:edi+0x18],cx            ;填写TSS选择子到TCB
+    mov word [edi+0x12],104         ;填写TSS界限值到TCB
+    mov [edi+0x14],esi              ;填写TSS线性基地址到TCB
+    mov [edi+0x18],cx               ;填写TSS选择子到TCB
 
-    mov dword [es:esi+60],0         ;填写ebp到TSS
-    mov dword [es:esi+64],0         ;填写esi到TSS
-    mov dword [es:esi+68],0         ;填写edi到TSS
-    mov word  [es:esi+0],0          ;填写上一个TSS链接
-    mov word  [es:esi+102],104      ;填写IOMap到TSS
+    mov dword [esi+60],0            ;填写ebp到TSS
+    mov dword [esi+64],0            ;填写esi到TSS
+    mov dword [esi+68],0            ;填写edi到TSS
+    mov word  [esi+0],0             ;填写上一个TSS链接
+    mov word  [esi+102],104         ;填写IOMap到TSS
+    mov word  [esi+100],0           ;T=0
     ;}}}
 
-    ;创建LDT并填写到TCB中{{{
+    ;创建LDT{{{
     mov ebx,[es:edi+0x06]           ;从TCB中获取下一个可用线性基地址
     call kernel_sysroute_seg_sel:alloc_inst_a_page
     add dword [es:edi+0x06],4096
@@ -848,20 +867,17 @@ load_relocate_user_program:
     mov [es:esi+96],cx              ;填写LDT选择子到TSS
     ;}}}
 
-    pop ecx                     ;恢复用户程序内存线性地址
-    mov edi,ecx
-
     ;{{{ 处理用户数据段
     mov eax,0
     mov ebx,0xffffe
     mov ecx,0x00c0f200          ;G=1,DPL=3
     call kernel_sysroute_seg_sel:make_seg_descriptor
-    mov ebx,[ebp+11*4]          ;TCB基地址
+    mov ebx,edi
     call fill_descriptor_in_ldt
-    mov [es:esi+84],cx          ;填写ds到TSS
-    mov [es:esi+72],cx          ;填写es到TSS
-    mov [es:esi+88],cx          ;填写fs到TSS
-    mov [es:esi+92],cx          ;填写gs到TSS
+    mov [esi+84],cx          ;填写ds到TSS
+    mov [esi+72],cx          ;填写es到TSS
+    mov [esi+88],cx          ;填写fs到TSS
+    mov [esi+92],cx          ;填写gs到TSS
     ;}}}
     
     ;{{{ 处理用户代码段
@@ -869,47 +885,42 @@ load_relocate_user_program:
     mov ebx,0xffffe
     mov ecx,0x00c0f800          ;G=1,DPL=3
     call kernel_sysroute_seg_sel:make_seg_descriptor
-    mov ebx,[ebp+11*4]          ;TCB基地址
+    mov ebx,edi
     call fill_descriptor_in_ldt
-    mov [es:esi+84],cx          ;填写ds到TSS
+    mov [esi+76],cx          ;填写cs到TSS
+    mov ebx,[ebp-0x4]           ;获取用户程序基地址
+    mov eax,[ebx+0x4]        ;从用户程序头部获取代码入口偏移
+    mov [esi+32],eax         ;填写eip到TSS
     ;}}}
 
-    ;{{{ 处理用户栈段
-    mov eax,[edi+0x0c]          ;用户程序希望栈的大小（4KB为单位）
-    mov ecx,eax
-.alloc_page_2:
+    ;处理用户栈段{{{
     mov ebx,[esi+0x06]
     add dword [esi+0x06],4096
     call kernel_sysroute_seg_sel:alloc_inst_a_page
-    loop .alloc_page_2
 
     mov eax,0
     mov ebx,0xfffff             ;4GB
     mov ecx,0x00c0f200          ;4KB粒度，DPL=3, expand-up
     call kernel_sysroute_seg_sel:make_seg_descriptor
-    mov ebx,esi
+    mov ebx,edi
     call fill_descriptor_in_ldt
-    mov [edi+0x08],cx           ;回填段选择子
-    mov [edi+0x0a],cx
     
-    mov eax,[edi+0x14]          ;从TCB中获取TSS基地址
-    mov [eax+80],cx             ;填写ss到TSS中
+    mov [esi+80],cx          ;填写ss到TSS中
     mov eax,[edi+0x06]
-    mov [eax+56],eax            ;填写esp到TSS中
+    mov [esi+56],eax         ;填写esp到TSS中
     ;}}}
 
-    ;{{{ 重定位salt
-    mov ecx,[edi+0x24]
-    mov esi,edi
-    add esi,0x28
+    ;重定位user-salt{{{
+    push esi
+    push edi
 
-    mov eax,kernel_data_seg_sel
-    mov es,eax
+    mov ebx,[ebp-0x04]          ;获取用户程序基地址
+    mov esi,[es:ebx+0x08]       ;从用户程序头部获取user-salt起始地址
+    mov ecx,[es:ebx+0x0c]       ;从用户程序头部获取user-salt数量
 
     cld
 
-    push edi
-.for_each_user_item:
+.next_user_salt_item:
     push esi
     push ecx
     mov edi,salt
@@ -920,149 +931,98 @@ load_relocate_user_program:
     mov esi,eax
     mov edi,ebx
     cmp edi,salt_end
-    jge .ret_each_user_item     ;超出k-salt表,继续处理下一个c-salt项
+    jge .continue_next_user_salt_item   ;超出kernel-salt表
+                                        ;继续处理下一个user-salt项
 
     add ebx,256+6
-    mov ecx,64          ;256/4=64
+    mov ecx,64                  ;256/4=64
     repe cmpsd
     jnz .next_kernel_salt_item
 
     mov eax,[es:edi]
-    mov bx,[es:edi+0x4]
+    mov bx,[es:edi+0x04]
     mov [esi-256],eax
-    or bx,0x3               ;使RPL=3
+    or bx,0x3                   ;使RPL=3
     mov [esi-252],bx
 
-.ret_each_user_item:
+.continue_next_user_salt_item:
     pop ecx
     pop esi
     add esi,256
-    loop .for_each_user_item
+    loop .next_user_salt_item
+
     pop edi
+    pop esi
     ;}}}
 
-    mov esi,[ebp+11*4]          ;TCB线性基地址
+    ;创建0特权级栈{{{
+    mov ebx,[edi+0x06]
+    add dword [edi+0x06],4096
+    call kernel_sysroute_seg_sel:alloc_inst_a_page
 
-    ;{{{ 创建TSS
-    mov ebx,[esi,]
-    call kernel_sysroute_seg_sel:allocate_memory
-    mov [esi+0x14],ecx      ;填写TSS线性基地址到TCB中
-
-    ;为用户程序TSS填写必要字段
-
-    ;esi => TCB基地址
-    ;ecx => TSS基地址
-
-    mov ax,[esi+0x22]       ;设置ss0
-    mov [ecx+8],ax
-    mov eax,[esi+0x24]      ;设置esp0
-    mov [ecx+4],eax
-
-    mov ax,[esi+0x30]       ;设置ss1
-    mov [ecx+16],ax
-    mov eax,[esi+0x32]      ;设置esp1
-    mov [ecx+12],eax
-
-    mov ax,[esi+0x3e]       ;设置ss2
-    mov [ecx+24],ax
-    mov eax,[esi+0x40]      ;设置esp2
-    mov [ecx+20],eax
-
-    mov ax,[esi+0x10]       ;设置ldt
-    mov [ecx+96],ax
-
-    mov word [ecx+100],0    ;T=0
-
-    mov dword [ecx+28],0    ;CR3=0
-
-    mov word [ecx+102],104  ;设置I/O bitmap
-
-    mov edi,[esi+0x06]      ;从TCB中获取用户程序基地址
-
-    mov ax,[edi+0x1c]       ;设置cs
-    mov [ecx+76],ax
-    mov eax,[edi+0x18]      ;设置eip
-    mov [ecx+32],eax
-
-    mov ax,[edi+0x08]       ;设置ss
-    mov [ecx+80],ax
-    mov dword [ecx+56],0    ;设置esp
-
-    mov ax,[esi+0x44]       ;设置ds为程序头部段
-    mov [ecx+84],ax
-
-    mov word [ecx+72],0     ;es=0
-    mov word [ecx+88],0     ;fs=0
-    mov word [ecx+92],0     ;gs=0
-
-    pushfd
-    pop edx
-    mov dword [ecx+36],edx  ;eflags
-
-    mov eax,ecx
-    mov ebx,104-1
-    mov ecx,0x00408900      ;TSS, DPL=0
-    call kernel_sysroute_seg_sel:make_seg_descriptor
-    call kernel_sysroute_seg_sel:install_gdt_descriptor
-    mov [esi+0x18],cx       ;填写TSS段选择子到TCB中
-    ;}}}
-
-
-    ;{{{ 创建0特权级栈
-    mov eax,4096
-    mov [esi+0x1a],eax          ;填写0特权级栈长度到TCB
-    shr dword [esi+0x1a],12
-    mov ecx,eax
-    call kernel_sysroute_seg_sel:allocate_memory
-    add eax,ecx
+    mov eax,0
     mov ebx,0xffffe
     mov ecx,0x00c09600
-    mov [esi+0x1e],eax          ;填写0特权级栈基地址到TCB
-    mov dword [esi+0x24],0      ;填写0特权级栈初始ESP到TCB
     call kernel_sysroute_seg_sel:make_seg_descriptor
-    mov ebx,esi
+    mov ebx,edi
     call fill_descriptor_in_ldt
-    and cx,0xfffc               ;设置RPL=0
-    mov [esi+0x22],cx           ;填写0特权级栈选择子到TCB
+
+    and cx,0xfffc               ;设置RPL=00
+    mov [esi+8],cx              ;填写ss0到TSS
+    mov ebx,[edi+0x06]
+    mov [esi+4],ebx             ;填写esp0到TSS
     ;}}}
 
-    ;{{{ 创建1特权级栈
-    mov eax,4096
-    mov [esi+0x28],eax
-    shr dword [esi+0x28],12
-    mov ecx,eax
-    call kernel_sysroute_seg_sel:allocate_memory
-    add eax,ecx
+    ;创建1特权级栈{{{
+    mov ebx,[edi+0x06]
+    add dword [edi+0x06],4096
+    call kernel_sysroute_seg_sel:alloc_inst_a_page
+
+    mov eax,0
     mov ebx,0xffffe
-    mov ecx,0x00c0b600
-    mov [esi+0x2c],eax
-    mov dword [esi+0x32],0
+    mov ecx,0x00c0b600          ;DPL=01
     call kernel_sysroute_seg_sel:make_seg_descriptor
-    mov ebx,esi
+    mov ebx,edi
     call fill_descriptor_in_ldt
-    or cx,1
-    and cx,0xfd
-    mov [esi+0x30],cx
+
+    and cx,0xfffc
+    or cx,1                     ;RPL=01
+    mov [esi+16],cx             ;填写ss1到TSS
+    mov ebx,[edi+0x06]
+    mov [esi+12],ebx            ;填写esp1到TSS
     ;}}}
 
     ;{{{ 创建2特权级栈
-    mov eax,4096
-    mov [esi+0x36],eax
-    shr dword [esi+0x36],12
-    mov ecx,eax
-    call kernel_sysroute_seg_sel:allocate_memory
-    add eax,ecx
+    mov ebx,[edi+0x06]
+    add dword [edi+0x06],4096
+    call kernel_sysroute_seg_sel:alloc_inst_a_page
+
+    mov eax,ecx
     mov ebx,0xffffe
     mov ecx,0x00c0d600
-    mov [esi+0x3a],eax
-    mov dword [esi+0x40],0
     call kernel_sysroute_seg_sel:make_seg_descriptor
-    mov ebx,esi
+    mov ebx,edi
     call fill_descriptor_in_ldt
-    or cx,2
-    and cx,0xfe
-    mov [esi+0x3e],cx
+
+    and cx,0xfffc
+    or cx,0x2
+    mov [esi+24],cx             ;填写ss2到TSS
+    mov ebx,[edi+0x06]
+    mov [esi+20],ebx            ;填写esp2到TSS
     ;}}} 
+
+    ;复制内核页目录给用户程序
+    mov ebx,[edi+0x06]
+    add dword [edi+0x06],4096
+    call kernel_sysroute_seg_sel:alloc_inst_a_page
+    call kernel_sysroute_seg_sel:copy_kernel_page_directory
+
+    mov eax,cr3
+    mov [ecx+28],0    ;填写CR3到TSS
+
+    pushfd
+    pop edx
+    mov dword [ecx+36],edx  ;拷贝自身eflags到TSS
 
     pop es
     pop ds
