@@ -1,4 +1,4 @@
-all: mbr kernel user disk
+all: mbr kernel user disk vb
 
 mbr:
 	nasm -f bin -o mbr.bin -l mbr.lst mbr.asm

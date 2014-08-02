@@ -1340,14 +1340,14 @@ flush:
     call load_relocate_user_program
 
     ;使用TSS切换到用户程序
-    call far [es:ecx+0x14]
+    jmp far [es:ecx+0x14]
 
     ;从用户程序返回，打印消息
     mov ebx,return_msg2
     call kernel_sysroute_seg_sel:putstr
 
     ;再次切换到用户程序
-    call far [es:ecx+0x14]
+    jmp far [es:ecx+0x14]
 
     ;从用户程序返回，打印消息
     mov ebx,return_msg2
