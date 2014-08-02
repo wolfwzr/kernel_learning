@@ -694,7 +694,7 @@ SECTION kernel_code vstart=0
 ;    将描述符添加到ldt表
 ;参数：
 ;    edx:eax = 描述符
-;    ebx = tcb线性基地址
+;    ebx = TCB线性基地址
 ;输出：
 ;    cx = 选择子
 fill_descriptor_in_ldt:
@@ -786,6 +786,7 @@ load_relocate_user_program:
 
     mov ebp,esp
     mov edi,[ebp+11*4]          ;取TCB线性基地址
+
     push edi                    ;局部变量，用于保存用户程序基地址
 
     ;清空内核线性地址0x0-0x7fffffff{{{
@@ -885,33 +886,35 @@ load_relocate_user_program:
 
     ;创建LDT{{{
     mov ebx,[edi+0x06]              ;从TCB中获取下一个可用线性基地址
-    call kernel_sysroute_seg_sel:alloc_inst_a_page
     add dword [edi+0x06],4096
+    call kernel_sysroute_seg_sel:alloc_inst_a_page
+
+    mov [edi+0x0c],ebx              ;填写LDT基地址到TCB
+    mov word [edi+0x0a],0xffff      ;填写LDT当前已用界限到TCB
+                                    ;下次往LDT安装新描述符时, 0xffff+1正好为0
 
     mov eax,ebx
     mov ebx,160                     ;8*20 LDT内最多20条描述符
     dec ebx
     mov ecx,0x0040e200
-    mov [edi+0x0c],eax           ;填写LDT基地址到TCB
-    mov word [edi+0x0a],0xffff   ;填写LDT当前已用界限到TCB
-                                    ;下次往LDT安装新描述符时, 0xffff+1正好为0
     call kernel_sysroute_seg_sel:make_seg_descriptor
     call kernel_sysroute_seg_sel:install_gdt_descriptor
-    mov [edi+0x10],cx            ;填写LDT选择子到TCB
-    mov [esi+96],cx              ;填写LDT选择子到TSS
+
+    mov [edi+0x10],cx               ;填写LDT选择子到TCB
+    mov [esi+96],cx                 ;填写LDT选择子到TSS
     ;}}}
 
     ;{{{ 处理用户数据段
     mov eax,0
     mov ebx,0xffffe
-    mov ecx,0x00c0f200          ;G=1,DPL=3
+    mov ecx,0x00c0f200              ;G=1,DPL=3
     call kernel_sysroute_seg_sel:make_seg_descriptor
     mov ebx,edi
     call fill_descriptor_in_ldt
-    mov [esi+84],cx          ;填写ds到TSS
-    mov [esi+72],cx          ;填写es到TSS
-    mov [esi+88],cx          ;填写fs到TSS
-    mov [esi+92],cx          ;填写gs到TSS
+    mov [esi+84],cx                 ;填写ds到TSS
+    mov [esi+72],cx                 ;填写es到TSS
+    mov [esi+88],cx                 ;填写fs到TSS
+    mov [esi+92],cx                 ;填写gs到TSS
     ;}}}
     
     ;{{{ 处理用户代码段
@@ -996,7 +999,7 @@ load_relocate_user_program:
 
     mov eax,0
     mov ebx,0xffffe
-    mov ecx,0x00c09600
+    mov ecx,0x00c09200
     call kernel_sysroute_seg_sel:make_seg_descriptor
     mov ebx,edi
     call fill_descriptor_in_ldt
@@ -1014,7 +1017,7 @@ load_relocate_user_program:
 
     mov eax,0
     mov ebx,0xffffe
-    mov ecx,0x00c0b600          ;DPL=01
+    mov ecx,0x00c0b200          ;DPL=01
     call kernel_sysroute_seg_sel:make_seg_descriptor
     mov ebx,edi
     call fill_descriptor_in_ldt
@@ -1031,9 +1034,9 @@ load_relocate_user_program:
     add dword [edi+0x06],4096
     call kernel_sysroute_seg_sel:alloc_inst_a_page
 
-    mov eax,ecx
+    mov eax,0
     mov ebx,0xffffe
-    mov ecx,0x00c0d600
+    mov ecx,0x00c0d200
     call kernel_sysroute_seg_sel:make_seg_descriptor
     mov ebx,edi
     call fill_descriptor_in_ldt
@@ -1239,14 +1242,13 @@ flush:
     call far [salt_1+256]
     ;}}}
 
-    ;为当前内核创建一个任务，称为程序管理任务{{{
     mov eax,mem_0_4_gb_seg_sel
     mov ds,eax
 
     mov eax,kernel_data_seg_sel
     mov es,eax
 
-    ;为TSS分配一页内存
+    ;创建内核TSS，称为程序管理任务{{{
     mov ebx,[es:kernel_next_laddr];
     add dword [es:kernel_next_laddr],4096
     call kernel_sysroute_seg_sel:alloc_inst_a_page
@@ -1258,7 +1260,10 @@ flush:
     mov word [ecx+100],0    ;T位置为0
     mov word [ecx+102],104  ;设置IO位图
 
-    ;为TSS生成段描述符并安装到GDT中
+    mov eax,cr3
+    mov [ecx+28],eax        ;设置PDBR
+
+    ;在GDT中注册TSS
     mov eax,ecx
     mov ebx,104-1
     mov ecx,0x00408900
@@ -1295,7 +1300,7 @@ flush:
     push ecx                                ;TCB线性基地址
     call load_relocate_user_program
 
-    ;使用任务切换到用户程序
+    ;使用TSS切换到用户程序
     call far [es:ecx+0x14]
 
     ;从用户程序返回，打印消息
@@ -1307,6 +1312,45 @@ flush:
 
     ;从用户程序返回，打印消息
     mov ebx,return_msg1
+    call kernel_sysroute_seg_sel:putstr
+
+    ;}}}
+
+    ;第二个用户程序{{{
+    ;使用call发起任务切换
+
+    mov eax,kernel_data_seg_sel
+    mov ds,eax
+
+    mov eax,mem_0_4_gb_seg_sel
+    mov es,eax
+
+    ;分配TCB内存
+    mov ebx,[kernel_next_laddr]
+    add dword [kernel_next_laddr],4096
+    call kernel_sysroute_seg_sel:alloc_inst_a_page
+    mov ecx,ebx
+    call append_to_tcb_link
+    mov dword [es:ebx+0x06],0               ;设置任务下一个可用线性地址为0
+
+    ;加载用户程序
+                                            ;用栈传参
+    push dword user_prog_start_sector       ;用户程序硬盘起始扇区号
+    push ecx                                ;TCB线性基地址
+    call load_relocate_user_program
+
+    ;使用TSS切换到用户程序
+    call far [es:ecx+0x14]
+
+    ;从用户程序返回，打印消息
+    mov ebx,return_msg2
+    call kernel_sysroute_seg_sel:putstr
+
+    ;再次切换到用户程序
+    call far [es:ecx+0x14]
+
+    ;从用户程序返回，打印消息
+    mov ebx,return_msg2
     call kernel_sysroute_seg_sel:putstr
 
     ;}}}
